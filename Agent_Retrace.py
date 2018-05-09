@@ -63,7 +63,7 @@ class DeepQNetwork:
         self.r = tf.placeholder(tf.float32, [self.batch_size, ], name='r')  # input Reward
         self.a = tf.placeholder(tf.int32, [self.batch_size, ], name='a')  # input Action [batch_size, ]
         self.done = tf.placeholder(tf.float32, [self.batch_size, ], name='done')  # if s_ is the end of episode
-        self.is_greedy=tf.placeholder(tf.float32, [self.batch_size, ], name='is_greedy')
+        self.c_coeficient = tf.placeholder(tf.float32, [self.batch_size, ], name='c_coefficient')
 
         w_initializer, b_initializer = tf.random_normal_initializer(0., 0.3), tf.constant_initializer(0.1)
 
@@ -89,29 +89,7 @@ class DeepQNetwork:
             a_indices = tf.stack([tf.range(tf.shape(self.a)[0], dtype=tf.int32), self.a], axis=1)
             self.q_eval_wrt_a = tf.gather_nd(params=self.q_eval, indices=a_indices)  # shape=(None, )
 
-        # new added
-        epsilon = self.epsilon
-
-        # calculate the probability of mu
-        def p_mu(is_greedy):
-            return tf.cond(tf.Variable(is_greedy == 1, dtype=tf.bool),
-                           lambda: sum([1 - epsilon, epsilon / self.n_actions]),
-                           lambda: sum([epsilon / self.n_actions]))
-
-        # calculate the probability of pi
-        # 目前这个不太对
-
-        with tf.variable_scope('loss'):
-            loss = tf.zeros([1, ])
-            c = self.lambda_factor
-            for i in range(self.batch_size - 1):
-                # p_pi_s = p_pi(self.a[i + 1])
-                p_pi_s = 1#tf.reduce_sum(self.a[i + 1]) == tf.argmax(self.q_eval[i + 1])
-                p_mu_s = p_mu(self.is_greedy[i + 1])
-                c = c * tf.reduce_min([1, p_pi_s / p_mu_s])
-                # 目前问题：q_expectation和q值不对
-                loss = loss + self.gamma ** i * c * (
-                    self.r[i] + self.gamma * tf.reduce_max(self.q_eval[i + 1]) - tf.gather(self.q_eval[i], self.a[i]))
+        loss = tf.reduce_sum(self.c_coeficient*(self.q_target-self.q_eval_wrt_a),axis=0)
         self.total_loss = tf.square(loss)
         with tf.variable_scope('train'):
             self._train_op = tf.train.AdamOptimizer(self.lr).minimize(self.total_loss)
@@ -167,6 +145,27 @@ class DeepQNetwork:
         # 采样完了如何学习？
         # loss函数要改
 
+        # 既然所有的batch都得到了，可以算出每个batch的pi了，也是确定的，不必要在算值了。可以在输入tensorflow图之前就计算
+        q_eval_s = self.sess.run(self.q_eval, feed_dict={
+            self.s: batch_memory[:, :self.n_features]})  # 期望得到的值，这里是根据target还是eval?梯度更新的是eval
+        expected_optimal_action = np.argmax(q_eval_s, axis=1)
+
+        def cal_mu_p(is_greedy):  # 计算p(a|s,mu)
+            return is_greedy * (1 - self.epsilon + self.epsilon / self.n_actions) + (
+                                                                                    1 - is_greedy) * self.epsilon / self.n_actions
+
+        def cal_pi_p(action, expected_action):  # 计算p(a|s,pi)
+            return action == expected_action
+
+        p_mu = cal_mu_p(batch_memory[:, -1])
+        p_pi = cal_pi_p(batch_memory[:, self.n_features], expected_optimal_action)
+        all_c = np.zeros([self.batch_size, ])
+        c = 1
+        all_c[1] = 1
+        for i in range(1, self.batch_size):
+            c = self.gamma * self.lambda_factor * c * np.min([1, p_pi[i] / p_mu[i]])
+            all_c[i] = c
+
         _, cost = self.sess.run(
             [self._train_op, self.total_loss],
             feed_dict={
@@ -175,10 +174,10 @@ class DeepQNetwork:
                 self.r: batch_memory[:, self.n_features + 1],
                 self.s_: batch_memory[:, -self.n_features - 4:-4],
                 self.done: batch_memory[:, -4],
-                self.is_greedy:batch_memory[:,-1]
+                self.c_coeficient: all_c
             })
         # print("learning")
-        print("cost is: " + str(cost))
+        #print("cost is: " + str(cost))
         self.learn_step_counter += 1
 
     def plot_cost(self):

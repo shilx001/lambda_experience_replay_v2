@@ -2,7 +2,7 @@
 
 import numpy as np
 import gym
-from Agent_DQN import DeepQNetwork
+from Agent_Retrace import DeepQNetwork
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
