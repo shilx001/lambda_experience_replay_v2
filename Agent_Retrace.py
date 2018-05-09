@@ -9,7 +9,7 @@ class DeepQNetwork:
             n_actions,
             n_features,
             learning_rate=0.01,
-            gamma=1,
+            gamma=0.9,
             e_greedy=0.1,
             replace_target_iter=300,
             memory_size=5000,
@@ -63,6 +63,7 @@ class DeepQNetwork:
         self.r = tf.placeholder(tf.float32, [self.batch_size, ], name='r')  # input Reward
         self.a = tf.placeholder(tf.int32, [self.batch_size, ], name='a')  # input Action [batch_size, ]
         self.done = tf.placeholder(tf.float32, [self.batch_size, ], name='done')  # if s_ is the end of episode
+        self.is_greedy=tf.placeholder(tf.float32, [self.batch_size, ], name='is_greedy')
 
         w_initializer, b_initializer = tf.random_normal_initializer(0., 0.3), tf.constant_initializer(0.1)
 
@@ -106,7 +107,7 @@ class DeepQNetwork:
             for i in range(self.batch_size - 1):
                 # p_pi_s = p_pi(self.a[i + 1])
                 p_pi_s = 1#tf.reduce_sum(self.a[i + 1]) == tf.argmax(self.q_eval[i + 1])
-                p_mu_s = p_mu(self.done[i + 1])
+                p_mu_s = p_mu(self.is_greedy[i + 1])
                 c = c * tf.reduce_min([1, p_pi_s / p_mu_s])
                 # 目前问题：q_expectation和q值不对
                 loss = loss + self.gamma ** i * c * (
@@ -173,10 +174,11 @@ class DeepQNetwork:
                 self.a: batch_memory[:, self.n_features],
                 self.r: batch_memory[:, self.n_features + 1],
                 self.s_: batch_memory[:, -self.n_features - 4:-4],
-                self.done: batch_memory[:, -4]
+                self.done: batch_memory[:, -4],
+                self.is_greedy:batch_memory[:,-1]
             })
         # print("learning")
-        #print("cost is: " + str(cost))
+        print("cost is: " + str(cost))
         self.learn_step_counter += 1
 
     def plot_cost(self):
