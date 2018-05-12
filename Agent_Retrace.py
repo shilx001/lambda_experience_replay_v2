@@ -161,7 +161,7 @@ class DeepQNetwork:
         p_pi = cal_pi_p(batch_memory[:, self.n_features], expected_optimal_action)
         all_c = np.zeros([self.batch_size, ])
         c = 1
-        all_c[1] = 1
+        all_c[0] = 1
         for i in range(1, self.batch_size):
             c = self.gamma * self.lambda_factor * c * np.min([1, p_pi[i] / p_mu[i]])
             all_c[i] = c
