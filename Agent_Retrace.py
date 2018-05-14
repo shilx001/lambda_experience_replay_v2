@@ -8,13 +8,13 @@ class DeepQNetwork:
             self,
             n_actions,
             n_features,
-            learning_rate=0.01,
+            learning_rate=0.001,
             gamma=0.9,
             e_greedy=0.1,
             replace_target_iter=300,
             memory_size=5000,
             replay_start=5000,
-            batch_size=32,
+            batch_size=4,
             lambda_factor=0.8,
             e_greedy_increment=None,
             output_graph=False,
@@ -63,7 +63,8 @@ class DeepQNetwork:
         self.r = tf.placeholder(tf.float32, [self.batch_size, ], name='r')  # input Reward
         self.a = tf.placeholder(tf.int32, [self.batch_size, ], name='a')  # input Action [batch_size, ]
         self.done = tf.placeholder(tf.float32, [self.batch_size, ], name='done')  # if s_ is the end of episode
-        self.c_coeficient = tf.placeholder(tf.float32, [self.batch_size, ], name='c_coefficient')
+        self.coefficient_mat = tf.placeholder(tf.float32, [self.batch_size, self.batch_size],
+                                              name='index_coefficient')
 
         w_initializer, b_initializer = tf.random_normal_initializer(0., 0.3), tf.constant_initializer(0.1)
 
@@ -89,10 +90,11 @@ class DeepQNetwork:
             a_indices = tf.stack([tf.range(tf.shape(self.a)[0], dtype=tf.int32), self.a], axis=1)
             self.q_eval_wrt_a = tf.gather_nd(params=self.q_eval, indices=a_indices)  # shape=(None, )
 
-        loss = tf.reduce_sum(self.c_coeficient*(self.q_target-self.q_eval_wrt_a),axis=0)
-        self.total_loss = tf.square(loss)
+        self.td_error = tf.reshape(self.q_target - self.q_eval_wrt_a, [self.batch_size, 1])
+        self.corrections = tf.matmul(self.coefficient_mat, self.td_error)
+        self.loss = tf.reduce_mean(tf.squared_difference(self.q_eval_wrt_a, self.q_eval_wrt_a + self.corrections))
         with tf.variable_scope('train'):
-            self._train_op = tf.train.AdamOptimizer(self.lr).minimize(self.total_loss)
+            self._train_op = tf.train.AdamOptimizer(self.lr).minimize(self.loss)
 
     def store_transition(self, s, a, r, s_, done, episode, step, is_greedy):
         if not hasattr(self, 'memory_counter'):
@@ -107,7 +109,8 @@ class DeepQNetwork:
         # to have batch dimension when feed into tf placeholder
         observation = observation * np.ones([self.batch_size, self.n_features])
         # 由于执行随机策略时可能选到这个，所以要先计算
-        actions_value = np.mean(self.sess.run(self.q_eval, feed_dict={self.s: observation}))
+        action=self.sess.run(self.q_eval, feed_dict={self.s: observation})
+        actions_value = np.mean(action,axis=0)
         best_action = np.argmax(actions_value)
 
         if np.random.uniform() < self.epsilon:
@@ -141,7 +144,7 @@ class DeepQNetwork:
             batch_memory = self.memory[sample_index, :]
             if len(set(batch_memory[:, -3])) is 1:
                 break
-
+        #print("start index is: "+str(start_index))
         # 采样完了如何学习？
         # loss函数要改
 
@@ -152,33 +155,47 @@ class DeepQNetwork:
 
         def cal_mu_p(is_greedy):  # 计算p(a|s,mu)
             return is_greedy * (1 - self.epsilon + self.epsilon / self.n_actions) + (
-                                                                                    1 - is_greedy) * self.epsilon / self.n_actions
+                                                                                        1 - is_greedy) * self.epsilon / self.n_actions
 
         def cal_pi_p(action, expected_action):  # 计算p(a|s,pi)
             return action == expected_action
 
         p_mu = cal_mu_p(batch_memory[:, -1])
         p_pi = cal_pi_p(batch_memory[:, self.n_features], expected_optimal_action)
-        all_c = np.zeros([self.batch_size, ])
-        c = 1
-        all_c[0] = 1
-        for i in range(1, self.batch_size):
-            c = self.gamma * self.lambda_factor * c * np.min([1, p_pi[i] / p_mu[i]])
-            all_c[i] = c
 
-        _, cost = self.sess.run(
-            [self._train_op, self.total_loss],
+        coefficient_mat = np.zeros([self.batch_size, self.batch_size])
+        for i in range(self.batch_size):
+            coefficient_mat[i, i:] = 1
+            c = 1
+            for j in range(i + 1, self.batch_size):
+                c = self.gamma * self.lambda_factor * c * np.min([1, p_pi[j] / p_mu[j]])
+                coefficient_mat[i][j] = c
+
+        _, cost, corrections = self.sess.run(
+            [self._train_op, self.loss, self.corrections],
             feed_dict={
                 self.s: batch_memory[:, :self.n_features],
                 self.a: batch_memory[:, self.n_features],
                 self.r: batch_memory[:, self.n_features + 1],
                 self.s_: batch_memory[:, -self.n_features - 4:-4],
                 self.done: batch_memory[:, -4],
-                self.c_coeficient: all_c
+                self.coefficient_mat: coefficient_mat
             })
+
+        td_error=self.sess.run(self.td_error,feed_dict={
+                self.s: batch_memory[:, :self.n_features],
+                self.a: batch_memory[:, self.n_features],
+                self.r: batch_memory[:, self.n_features + 1],
+                self.s_: batch_memory[:, -self.n_features - 4:-4],
+                self.done: batch_memory[:, -4]})
         # print("learning")
+
         #print("cost is: " + str(cost))
+        self.cost_his.append(cost)
+        # print(sum(td_error))
         self.learn_step_counter += 1
+        if self.epsilon > 0.1:
+            self.epsilon *= 0.995
 
     def plot_cost(self):
         import matplotlib.pyplot as plt
